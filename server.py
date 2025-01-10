@@ -2,6 +2,7 @@ import os
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import sqlite3
 import json
+from wsgiref.simple_server import make_server
 
 class DatabaseHandler:
     @staticmethod
@@ -20,41 +21,57 @@ class DatabaseHandler:
         conn.close()
         return user is not None
 
-class CustomHandler(SimpleHTTPRequestHandler):
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        SimpleHTTPRequestHandler.end_headers(self)
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
-
-    def do_POST(self):
-        if self.path == '/login':
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
+def application(environ, start_response):
+    path = environ['PATH_INFO']
+    method = environ['REQUEST_METHOD']
+    
+    if method == 'POST' and path == '/login':
+        try:
+            content_length = int(environ.get('CONTENT_LENGTH', 0))
+            request_body = environ['wsgi.input'].read(content_length).decode('utf-8')
+            data = json.loads(request_body)
             
             success = DatabaseHandler.check_user(data.get('email'), data.get('password'))
             
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json')
-            self.end_headers()
+            response = json.dumps({'success': success}).encode('utf-8')
             
-            response = json.dumps({'success': success})
-            self.wfile.write(response.encode('utf-8'))
-            return
+            start_response('200 OK', [
+                ('Content-Type', 'application/json'),
+                ('Access-Control-Allow-Origin', '*'),
+                ('Content-Length', str(len(response)))
+            ])
+            return [response]
+            
+        except Exception as e:
+            response = json.dumps({'success': False, 'error': str(e)}).encode('utf-8')
+            start_response('500 Internal Server Error', [
+                ('Content-Type', 'application/json'),
+                ('Access-Control-Allow-Origin', '*'),
+                ('Content-Length', str(len(response)))
+            ])
+            return [response]
+    
+    elif method == 'OPTIONS':
+        start_response('200 OK', [
+            ('Access-Control-Allow-Origin', '*'),
+            ('Access-Control-Allow-Methods', 'POST, OPTIONS'),
+            ('Access-Control-Allow-Headers', 'Content-Type'),
+            ('Content-Length', '0')
+        ])
+        return []
+    
+    else:
+        response = b'Not Found'
+        start_response('404 Not Found', [
+            ('Content-Type', 'text/plain'),
+            ('Content-Length', str(len(response)))
+        ])
+        return [response]
 
-        return super().do_POST()
-
-def run_server():
-    port = int(os.environ.get('PORT', 8000))
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, CustomHandler)
-    print(f'Starting server on port {port}...')
-    httpd.serve_forever()
+app = application
 
 if __name__ == '__main__':
-    run_server()
+    port = int(os.environ.get('PORT', 8000))
+    with make_server('', port, app) as httpd:
+        print(f'Serving on port {port}...')
+        httpd.serve_forever()
